@@ -1,0 +1,15 @@
+{
+  "name": "agent-wallet-il",
+  "version": "0.1.0",
+  "description": "ארנק תשלום מבוקר לסוכני AI - קוד פתוח ישראלי. Controlled spending wallet for AI agents, Israeli open-source edition.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Ofer Shapira",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "start": "node src/server.ts",
+    "mcp": "node src/mcp-server.ts"
+  },
+  "keywords": ["ai-agents", "mcp", "payments", "wallet", "israel", "open-source", "hebrew"]
+}

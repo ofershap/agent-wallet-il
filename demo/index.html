@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ארנק לבוטים — הדמיה חיה</title>
+<style>
+  :root { --ink:#251f21; --ink2:#585254; --teal:#3f7d6c; --red:#c62f3a; --line:#eae9ea; --bg:#f4efec; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+  .card { background:#fff; border-radius:16px; padding:20px; margin-bottom:16px; box-shadow:0 1px 3px rgb(0 0 0 / .06); }
+  h1 { font-size:22px; margin:0 0 4px; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  .sub { color:var(--ink2); font-size:14px; margin:0; }
+  .balance { font-size:34px; font-weight:700; color:var(--teal); margin:8px 0; }
+  .banner { background:#fdf3e3; border:1px solid #f0dcb0; border-radius:12px; padding:10px 14px; font-size:13px; margin-bottom:16px; }
+  .modes { display:flex; gap:8px; margin:12px 0; }
+  .modes button { flex:1; }
+  button { font:inherit; padding:10px 14px; border-radius:10px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+  button.primary { background:var(--teal); color:#fff; border-color:var(--teal); }
+  button.danger { color:var(--red); border-color:#f2c6ca; }
+  button.active { outline:2px solid var(--teal); font-weight:600; }
+  input { font:inherit; padding:10px; border:1px solid var(--line); border-radius:10px; width:100%; }
+  label { font-size:13px; color:var(--ink2); display:block; margin:10px 0 4px; }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  .req { border:1px solid var(--line); border-radius:12px; padding:12px; margin-top:10px; }
+  .req .actions { display:flex; gap:8px; margin-top:10px; }
+  .status { font-size:12px; font-weight:600; }
+  .status.pending { color:#a06a00; } .status.approved, .status.auto-approved { color:var(--teal); }
+  .status.declined, .status.auto-declined { color:var(--red); }
+  .ledger { font-size:13px; color:var(--ink2); }
+  .ledger div { padding:6px 0; border-top:1px solid var(--line); display:flex; justify-content:space-between; gap:8px; }
+  .toast { position:fixed; inset-inline:16px; bottom:16px; max-width:640px; margin:auto; background:var(--ink); color:#fff; padding:14px 16px; border-radius:12px; font-size:13px; display:none; direction:rtl; white-space:pre-line; }
+  .toast code { direction:ltr; unicode-bidi:embed; background:#3a3336; padding:1px 6px; border-radius:6px; }
+  .muted { color:var(--ink2); font-size:12px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="banner">⚠️ הדמיה בלבד — לא כסף אמיתי. כאן רצים בדפדפן אותם חוקי ההוצאה שב־<b>src/wallet.ts</b>; חיבור לכסף אמיתי דורש מנפיק/סולק מתאים.</div>
+
+  <div class="card">
+    <h1>הארנק של הבוט 🤖</h1>
+    <p class="sub">יתרה זמינה</p>
+    <div class="balance" id="balance">₪0.00</div>
+    <label>טעינה ידנית (בעל הארנק בלבד)</label>
+    <div class="row">
+      <input id="topup" type="number" min="1" placeholder="סכום בשקלים">
+      <button class="primary" onclick="topUp()">טען</button>
+    </div>
+    <label>מצב עבודה — הבחירה שלך, לא של הבוט</label>
+    <div class="modes">
+      <button id="mode-approve" onclick="setMode('approve-each')">אישור לכל קנייה</button>
+      <button id="mode-auto" onclick="setMode('autonomous')">אוטונומי בתוך תקציב</button>
+    </div>
+    <p class="muted" id="rules-line"></p>
+  </div>
+
+  <div class="card">
+    <h2>הבוט מבקש לקנות</h2>
+    <div class="row">
+      <div><label>בית עסק</label><input id="merchant" placeholder="איקאה"></div>
+      <div><label>סכום (ש״ח)</label><input id="amount" type="number" min="1" placeholder="45"></div>
+    </div>
+    <label>מה קונים</label>
+    <input id="desc" placeholder="מנורת קיר לחדר">
+    <div style="margin-top:12px"><button class="primary" onclick="requestSpend()">בקשת רכישה מהבוט</button></div>
+    <div id="requests"></div>
+  </div>
+
+  <div class="card">
+    <h2>פנקס תנועות</h2>
+    <div class="ledger" id="ledger"><div class="muted">אין תנועות עדיין</div></div>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+// --- אותם חוקים כמו src/wallet.ts, בגרסת דפדפן להדמיה עצמאית ---
+const DAY = 24*60*60*1000, TTL = 10*60*1000;
+const state = {
+  mode: 'approve-each',
+  rules: { perPurchaseAgorot: 5000, dailyAgorot: 10000, monthlyAgorot: 30000 },
+  balance: 0, requests: [], credentials: [], ledger: [],
+};
+const ils = a => '₪' + (a / 100).toFixed(2);
+const rid = p => p + '_' + Math.random().toString(16).slice(2, 14);
+
+function checkRules(merchant, amount) {
+  const v = [], r = state.rules, now = Date.now();
+  if (r.blockedMerchants?.some(m => m.toLowerCase() === merchant.toLowerCase())) v.push('merchant-blocked');
+  if (r.allowedMerchants && !r.allowedMerchants.some(m => m.toLowerCase() === merchant.toLowerCase())) v.push('merchant-not-allowed');
+  if (amount > r.perPurchaseAgorot) v.push('per-purchase-cap');
+  const spentDay = state.ledger.filter(e => e.kind==='spend' && now-e.at < DAY).reduce((s,e)=>s+e.amountAgorot,0);
+  if (spentDay + amount > r.dailyAgorot) v.push('daily-cap');
+  const d = new Date(now), monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+  const spentMonth = state.ledger.filter(e => e.kind==='spend' && e.at >= monthStart).reduce((s,e)=>s+e.amountAgorot,0);
+  if (spentMonth + amount > r.monthlyAgorot) v.push('monthly-cap');
+  if (amount > state.balance) v.push('insufficient-balance');
+  return v;
+}
+function issueCredential(merchant, amount) {
+  const c = { token: rid('demo_pay'), merchant, amountAgorot: amount, expiresAt: Date.now()+TTL, used: false, simulated: true };
+  state.credentials.push(c);
+  return c;
+}
+function topUp() {
+  const shekels = Number(document.getElementById('topup').value);
+  if (!(shekels > 0)) return;
+  const amount = Math.round(shekels * 100);
+  state.balance += amount;
+  state.ledger.push({ at: Date.now(), kind: 'topup', amountAgorot: amount, note: 'טעינה ידנית' });
+  document.getElementById('topup').value = '';
+  render();
+}
+function setMode(mode) { state.mode = mode; render(); }
+function requestSpend() {
+  const merchant = document.getElementById('merchant').value || 'חנות';
+  const amount = Math.round(Number(document.getElementById('amount').value || '0') * 100);
+  const description = document.getElementById('desc').value || '';
+  if (amount <= 0) return toast('נא להזין סכום חיובי');
+  const request = { id: rid('req'), merchant, amountAgorot: amount, description, createdAt: Date.now(), status: 'pending' };
+  if (state.mode === 'approve-each') {
+    state.requests.push(request);
+    toast(`הבוט מבקש: ${merchant}, ${ils(amount)}.\nההחלטה שלך — אשר או דחה למטה.`);
+  } else {
+    const v = checkRules(merchant, amount);
+    if (v.length) {
+      request.status = 'auto-declined'; request.reason = v.join(', ');
+      state.requests.push(request);
+      state.ledger.push({ at: Date.now(), kind: 'decline', amountAgorot: amount, merchant, note: request.reason });
+      toast(`נדחה אוטומטית: ${request.reason}`);
+    } else {
+      request.status = 'auto-approved';
+      state.requests.push(request);
+      const c = issueCredential(merchant, amount);
+      redeem(c.token, true);
+      toast(`אושר אוטומטית בתוך החוקים.\nאישור תשלום (הדמיה): ${c.token}\nנעול ל־${merchant} בסך ${ils(amount)}, חד־פעמי.`);
+    }
+  }
+  render();
+}
+function approveReq(id) {
+  const r = state.requests.find(x => x.id === id);
+  const v = checkRules(r.merchant, r.amountAgorot);
+  if (v.length) {
+    r.status = 'declined'; r.reason = 'rules changed since request: ' + v.join(', ');
+    state.ledger.push({ at: Date.now(), kind: 'decline', amountAgorot: r.amountAgorot, merchant: r.merchant, note: r.reason });
+    toast('החוקים השתנו מאז הבקשה — נדחה: ' + r.reason);
+  } else {
+    r.status = 'approved';
+    const c = issueCredential(r.merchant, r.amountAgorot);
+    redeem(c.token, true);
+    toast(`אישרת! הונפק אישור תשלום (הדמיה):\n${c.token}\nנעול ל־${c.merchant} בסך ${ils(c.amountAgorot)}, חד־פעמי, פג בעוד 10 דקות.`);
+  }
+  render();
+}
+function declineReq(id) {
+  const r = state.requests.find(x => x.id === id);
+  r.status = 'declined'; r.reason = 'נדחה על ידי הבעלים';
+  state.ledger.push({ at: Date.now(), kind: 'decline', amountAgorot: r.amountAgorot, merchant: r.merchant, note: r.reason });
+  render();
+}
+function redeem(token, silent) {
+  const c = state.credentials.find(x => x.token === token);
+  if (!c || c.used || Date.now() > c.expiresAt) return;
+  c.used = true;
+  state.balance -= c.amountAgorot;
+  state.ledger.push({ at: Date.now(), kind: 'spend', amountAgorot: c.amountAgorot, merchant: c.merchant, note: 'מימוש אישור ' + c.token.slice(0,14) + '… (הדמיה)' });
+}
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 6000);
+}
+function render() {
+  document.getElementById('balance').textContent = ils(state.balance);
+  const r = state.rules;
+  document.getElementById('rules-line').textContent =
+    `תקרות: ${ils(r.perPurchaseAgorot)} לקנייה · ${ils(r.dailyAgorot)} ליום · ${ils(r.monthlyAgorot)} לחודש`;
+  document.getElementById('mode-approve').classList.toggle('active', state.mode === 'approve-each');
+  document.getElementById('mode-auto').classList.toggle('active', state.mode === 'autonomous');
+  const labels = {pending:'ממתין לאישורך',approved:'אושר','auto-approved':'אושר אוטומטית',declined:'נדחה','auto-declined':'נדחה אוטומטית',expired:'פג תוקף'};
+  document.getElementById('requests').innerHTML = [...state.requests].reverse().map(r => `
+    <div class="req">
+      <div><b>${r.merchant}</b> · ${ils(r.amountAgorot)} · ${r.description}
+        <span class="status ${r.status}">${labels[r.status]}</span></div>
+      ${r.reason ? `<div class="muted">${r.reason}</div>` : ''}
+      ${r.status === 'pending' ? `<div class="actions">
+        <button class="primary" onclick="approveReq('${r.id}')">אשר (אתה)</button>
+        <button class="danger" onclick="declineReq('${r.id}')">דחה</button></div>` : ''}
+    </div>`).join('');
+  const entries = [...state.ledger].reverse();
+  document.getElementById('ledger').innerHTML = entries.length
+    ? entries.map(e => `<div><span>${e.kind === 'topup' ? '⬆️ טעינה' : e.kind === 'spend' ? `🛒 ${e.merchant}` : `🚫 ${e.merchant ?? ''}`} <span class="muted">${e.note}</span></span><b>${e.kind === 'spend' ? '-' : '+'}${ils(e.amountAgorot)}</b></div>`).join('')
+    : '<div class="muted">אין תנועות עדיין</div>';
+}
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-wallet-il — מסוף בעלים</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; background: #f7f7f5; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  .card { background: #fff; border: 1px solid #e2e2de; border-radius: 12px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .5rem 0; }
+  button { background: #0f5c46; color: #fff; border: 0; border-radius: 8px; padding: .45rem 1rem; cursor: pointer; font-size: .95rem; }
+  button.decline { background: #a33; }
+  input, select { padding: .4rem .6rem; border: 1px solid #ccc; border-radius: 8px; font-size: .95rem; }
+  .balance { font-size: 1.6rem; font-weight: 700; }
+  .muted { color: #777; font-size: .85rem; }
+  .pending-item { border-top: 1px dashed #ddd; padding: .6rem 0; }
+  .err { color: #a33; font-size: .9rem; }
+  code { background: #efefec; padding: .1rem .4rem; border-radius: 6px; }
+</style>
+</head>
+<body>
+<h1>מסוף בעלים — ארנק הסוכן <span class="muted">(הדמיה, לא כסף אמיתי)</span></h1>
+
+<div class="card" id="auth-card">
+  <p>הדף הזה הוא ערוץ הבעלים. הזן את ה־<code>OWNER_TOKEN</code> שהודפס ב-console כשהשרת עלה:</p>
+  <div class="row">
+    <input id="token" type="password" placeholder="OWNER_TOKEN" size="36">
+    <button onclick="saveToken()">כניסה</button>
+  </div>
+  <p class="err" id="auth-err"></p>
+</div>
+
+<div id="main" style="display:none">
+  <div class="card">
+    <div>יתרה: <span class="balance" id="balance"></span> <span class="muted" id="available"></span></div>
+    <div class="row">
+      <input id="topup-amount" type="number" min="1" step="1" placeholder="סכום בש״ח" style="width:9rem">
+      <button onclick="topup()">טעינה ידנית</button>
+      <span class="muted">אין מקור מימון אוטומטי — טעינה ידנית בלבד</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      מצב עבודה:
+      <select id="mode" onchange="setMode()">
+        <option value="approve-each">אישור על כל רכישה</option>
+        <option value="autonomous">עצמאי בתוך תקציב וחוקים</option>
+      </select>
+    </div>
+    <div class="row">
+      תקרה לרכישה ₪<input id="r-per" type="number" min="1" style="width:6rem">
+      ליום ₪<input id="r-day" type="number" min="1" style="width:6rem">
+      לחודש ₪<input id="r-month" type="number" min="1" style="width:7rem">
+      <button onclick="setRules()">עדכון חוקים</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <b>בקשות ממתינות לאישור</b>
+    <div id="pending"><p class="muted">אין בקשות ממתינות</p></div>
+  </div>
+
+  <div class="card">
+    <b>פנקס תנועות</b>
+    <div id="ledger"></div>
+  </div>
+</div>
+
+<script>
+let TOKEN = '';
+function saveToken() {
+  TOKEN = document.getElementById('token').value.trim();
+  api('/api/state').then(s => {
+    document.getElementById('auth-card').style.display = 'none';
+    document.getElementById('main').style.display = 'block';
+    render(s);
+  }).catch(() => { document.getElementById('auth-err').textContent = 'אסימון שגוי'; });
+}
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'content-type': 'application/json', 'x-owner-token': TOKEN },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.status);
+  return data;
+}
+function ils(a) { return '₪' + (a / 100).toFixed(2); }
+function render(s) {
+  document.getElementById('balance').textContent = s.balance;
+  document.getElementById('available').textContent = 'זמין: ' + s.available;
+  document.getElementById('mode').value = s.mode;
+  document.getElementById('r-per').value = s.rules.perPurchaseAgorot / 100;
+  document.getElementById('r-day').value = s.rules.dailyAgorot / 100;
+  document.getElementById('r-month').value = s.rules.monthlyAgorot / 100;
+  const p = document.getElementById('pending');
+  if (!s.pending.length) { p.innerHTML = '<p class="muted">אין בקשות ממתינות</p>'; }
+  else {
+    p.innerHTML = s.pending.map(r => `
+      <div class="pending-item">
+        <b>${r.merchant}</b> — ${ils(r.amountAgorot)} — ${r.description}
+        <div class="row">
+          <button onclick="decide('${r.id}', true)">אישור</button>
+          <button class="decline" onclick="decide('${r.id}', false)">דחייה</button>
+        </div>
+      </div>`).join('');
+  }
+  document.getElementById('ledger').innerHTML = s.ledger.slice().reverse().map(e =>
+    `<div class="muted">${new Date(e.at).toLocaleString('he-IL')} · ${e.kind} · ${ils(e.amountAgorot)} ${e.merchant ? '· ' + e.merchant : ''} · ${e.note}</div>`
+  ).join('') || '<p class="muted">ריק</p>';
+}
+async function refresh() { render(await api('/api/state')); }
+async function topup() {
+  const n = Number(document.getElementById('topup-amount').value);
+  if (!Number.isInteger(n) || n <= 0) return alert('סכום חיובי שלם בש״ח');
+  await api('/api/topup', { amountAgorot: n * 100 }); refresh();
+}
+async function decide(id, ok) {
+  try { await api(ok ? '/api/approve' : '/api/decline', { requestId: id }); }
+  catch (e) { alert(e.message); }
+  refresh();
+}
+async function setMode() { await api('/api/mode', { mode: document.getElementById('mode').value }); refresh(); }
+async function setRules() {
+  const v = id => Math.round(Number(document.getElementById(id).value) * 100);
+  await api('/api/rules', { perPurchaseAgorot: v('r-per'), dailyAgorot: v('r-day'), monthlyAgorot: v('r-month') });
+  refresh();
+}
+setInterval(() => { if (TOKEN && document.getElementById('main').style.display !== 'none') refresh().catch(() => {}); }, 3000);
+</script>
+</body>
+</html>
