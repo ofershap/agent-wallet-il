@@ -16,7 +16,11 @@
  *  - אישור שפג תוקפו משחרר את הרזרבציה אוטומטית.
  */
 
+import type { IssuerAdapter, IssuedCredential } from './issuer.ts';
+import { SimulatedIssuerAdapter } from './issuer.ts';
+
 export type ApprovalMode = 'approve-each' | 'autonomous';
+export type { IssuedCredential } from './issuer.ts';
 
 export interface WalletRules {
   perPurchaseAgorot: number;
@@ -36,15 +40,8 @@ export interface SpendRequest {
   reason?: string;
 }
 
-/** אישור תשלום חד־פעמי (הדמיה) — נעול לבית עסק ולסכום, פג תוקף, לשימוש יחיד */
-export interface PaymentCredential {
-  token: string;
-  merchant: string;
-  amountAgorot: number;
-  expiresAt: number;
-  status: 'active' | 'redeemed' | 'expired';
-  simulated: true;
-}
+/** אישור תשלום חד־פעמי — נעול לבית עסק ולסכום, פג תוקף, לשימוש יחיד */
+export type PaymentCredential = IssuedCredential;
 
 export interface LedgerEntry {
   at: number;
@@ -63,7 +60,6 @@ export type RuleViolation =
   | 'insufficient-balance';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const CREDENTIAL_TTL_MS = 10 * 60 * 1000;
 
 function randomId(prefix: string): string {
   const bytes = new Uint8Array(12);
@@ -86,13 +82,16 @@ export class AgentWallet {
   private rules: WalletRules;
   private mode: ApprovalMode;
   private requests: SpendRequest[] = [];
-  private credentials: PaymentCredential[] = [];
+  private issuer: IssuerAdapter;
   private ledger: LedgerEntry[] = [];
 
-  constructor(mode: ApprovalMode, rules: WalletRules) {
+  constructor(mode: ApprovalMode, rules: WalletRules, issuer?: IssuerAdapter) {
     this.mode = mode;
     this.rules = rules;
+    this.issuer = issuer ?? new SimulatedIssuerAdapter();
   }
+
+  getIssuerName(): string { return this.issuer.name; }
 
   getMode(): ApprovalMode { return this.mode; }
   setMode(mode: ApprovalMode): void { this.mode = mode; }
@@ -100,7 +99,7 @@ export class AgentWallet {
   setRules(rules: Partial<WalletRules>): void { this.rules = { ...this.rules, ...rules }; }
   getLedger(): LedgerEntry[] { return [...this.ledger]; }
   getRequests(): SpendRequest[] { return [...this.requests]; }
-  getCredentials(): PaymentCredential[] { this.sweepExpired(); return this.credentials.map((c) => ({ ...c })); }
+  getCredentials(): PaymentCredential[] { return this.issuer.list(Date.now()); }
   getPendingRequests(): SpendRequest[] { return this.requests.filter((r) => r.status === 'pending'); }
 
   /** יתרה כוללת (כולל סכומים שמורזרבים לאישורים פעילים) */
@@ -109,20 +108,15 @@ export class AgentWallet {
   getAvailableAgorot(): number { this.sweepExpired(); return this.balanceAgorot - this.activeHoldsAgorot(); }
 
   private activeHoldsAgorot(): number {
-    return this.credentials
-      .filter((c) => c.status === 'active')
-      .reduce((s, c) => s + c.amountAgorot, 0);
+    return this.issuer.activeHoldsAgorot(Date.now());
   }
 
   /** פג תוקף של אישורים → שחרור הרזרבציה */
   private sweepExpired(now = Date.now()): void {
-    for (const c of this.credentials) {
-      if (c.status === 'active' && now > c.expiresAt) {
-        c.status = 'expired';
-        this.ledger.push({ at: now, kind: 'release', amountAgorot: c.amountAgorot, merchant: c.merchant, note: 'אישור פג תוקף — הרזרבציה שוחררה' });
-        const req = this.requests.find((r) => r.status === 'approved' || r.status === 'auto-approved');
-        if (req && req.merchant === c.merchant && req.amountAgorot === c.amountAgorot) req.status = 'expired';
-      }
+    for (const { credential: c } of this.issuer.sweepExpired(now)) {
+      this.ledger.push({ at: now, kind: 'release', amountAgorot: c.amountAgorot, merchant: c.merchant, note: 'אישור פג תוקף — הרזרבציה שוחררה' });
+      const req = this.requests.find((r) => r.status === 'approved' || r.status === 'auto-approved');
+      if (req && req.merchant === c.merchant && req.amountAgorot === c.amountAgorot) req.status = 'expired';
     }
   }
 
@@ -231,19 +225,10 @@ export class AgentWallet {
     return request;
   }
 
-  /** הנפקת אישור + רזרבציה מיידית של הסכום */
+  /** הנפקת אישור דרך מתאם המנפיק + רזרבציה מיידית של הסכום */
   private issueCredential(merchant: string, amountAgorot: number): PaymentCredential {
     // רזרבציה בלבד: הסכום נעול כ-hold ומקוזז מהיתרה הזמינה ומהתקרות עד למימוש או פקיעה
-    const credential: PaymentCredential = {
-      token: randomId('demo_pay'),
-      merchant,
-      amountAgorot,
-      expiresAt: Date.now() + CREDENTIAL_TTL_MS,
-      status: 'active',
-      simulated: true,
-    };
-    this.credentials.push(credential);
-    return credential;
+    return this.issuer.issue(merchant, amountAgorot);
   }
 
   /**
@@ -252,18 +237,7 @@ export class AgentWallet {
    * חד־פעמי: אותו אסימון לא ניתן למימוש פעמיים.
    */
   redeem(token: string, merchant: string, amountAgorot: number): LedgerEntry {
-    this.sweepExpired();
-    const credential = this.credentials.find((c) => c.token === token);
-    if (!credential) throw new Error('unknown credential');
-    if (credential.status === 'redeemed') throw new Error('credential already used');
-    if (credential.status === 'expired') throw new Error('credential expired');
-    if (credential.merchant.toLowerCase() !== merchant.toLowerCase()) {
-      throw new Error(`credential locked to merchant ${credential.merchant}`);
-    }
-    if (credential.amountAgorot !== amountAgorot) {
-      throw new Error(`credential locked to amount ${credential.amountAgorot}`);
-    }
-    credential.status = 'redeemed';
+    const credential = this.issuer.redeem(token, merchant, amountAgorot, Date.now());
     this.balanceAgorot -= amountAgorot;
     const entry: LedgerEntry = {
       at: Date.now(),

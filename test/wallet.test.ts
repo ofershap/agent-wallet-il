@@ -140,3 +140,18 @@ test('אישור כפול על אותה בקשה לא אפשרי', () => {
   w.approve(request.id);
   assert.throws(() => w.approve(request.id), /not pending/);
 });
+
+test('מתאם מנפיק: הארנק משתמש במתאם שהוזרק, וברירת־המחדל היא הדמיה', async () => {
+  const { SimulatedIssuerAdapter } = await import('../src/issuer.ts');
+  const w = new AgentWallet('approve-each', rules);
+  assert.equal(w.getIssuerName(), 'simulated');
+  const adapter = new SimulatedIssuerAdapter();
+  const w2 = new AgentWallet('approve-each', rules, adapter);
+  w2.topUp(10000);
+  const { request } = w2.requestSpend('איקאה', 1000, 'x');
+  const { credential } = w2.approve(request.id);
+  assert.equal(credential.simulated, true);
+  assert.equal(adapter.list(Date.now()).length, 1); // ההנפקה עברה דרך המתאם
+  w2.redeem(credential.token, 'איקאה', 1000);
+  assert.equal(adapter.list(Date.now())[0].status, 'redeemed');
+});

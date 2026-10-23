@@ -110,12 +110,13 @@ const { request, credential } = wallet.requestSpend('איקאה', 4500, 'מנו�
 ## מבנה
 
 ```
-src/wallet.ts      הליבה — חוקים, תקציב, רזרבציות, אישורים, פנקס (טהור, אפס I/O)
+src/wallet.ts      הליבה — חוקים, תקציב, רזרבציות, פנקס (טהור, אפס I/O)
+src/issuer.ts      גבול המתאם למנפיק (IssuerAdapter) + הדמיה מקומית; מתאם אמיתי יתחבר כאן
 src/mcp-server.ts  שרת MCP — ערוץ סוכן בלבד
 src/server.ts      שני שרתי REST: סוכן :3000, בעלים :3001 (x-owner-token)
 demo/index.html    דמו ויזואלי עצמאי (עובד גם בלי שרת)
 demo/owner.html    מסוף הבעלים שמוגש מפורט 3001
-test/              node:test — חוקים, רזרבציות, קצוות (13 בדיקות)
+test/              node:test — חוקים, רזרבציות, קצוות, מתאם (14 בדיקות)
 ```
 
 ## תרומה
